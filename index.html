@@ -2,44 +2,59 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>10s Loop Cam</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Stealth Loop Cam</title>
     <style>
-        body { margin: 0; background: #000; color: white; font-family: sans-serif; overflow: hidden; }
-        #video-container { position: relative; width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; }
-        video { width: 100%; height: 100%; object-fit: cover; }
-        #controls { position: absolute; bottom: 40px; left: 0; right: 0; display: flex; flex-direction: column; align-items: center; gap: 20px; z-index: 10; }
-        button { width: 200px; padding: 20px; border: none; border-radius: 50px; font-size: 18px; font-weight: bold; transition: 0.3s; }
-        #recBtn { background: #ff3b30; color: white; } 
-        #recBtn.recording { background: #fff; color: #000; }
-        #status { position: absolute; top: 40px; left: 0; right: 0; text-align: center; background: rgba(0,0,0,0.5); padding: 10px; pointer-events: none; z-index: 20; }
-        .rec-mark { color: red; animation: blink 1s infinite; margin-right: 5px; }
-        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0; } 100% { opacity: 1; } }
+        /* 画面全体を真っ黒に */
+        body { margin: 0; background: #000; color: white; font-family: sans-serif; overflow: hidden; touch-action: manipulation; }
+        
+        /* ビデオとボタンは基本非表示 */
+        video { display: none; }
+        
+        #controls { 
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); 
+            z-index: 100; 
+        }
+
+        button { 
+            width: 200px; padding: 20px; border: none; border-radius: 50px; 
+            font-size: 18px; font-weight: bold; background: #ff3b30; color: white;
+        }
+
+        #status { 
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            font-size: 24px; text-align: center; pointer-events: none; z-index: 200;
+        }
+
+        .hidden { display: none !important; }
     </style>
 </head>
-<body>
+<body id="body">
 
-<div id="status">カメラ準備中...</div>
+<div id="status">準備完了</div>
 
-<div id="video-container">
-    <video id="webcam" autoplay playsinline muted></video>
-    <div id="controls">
-        <button id="recBtn">録画開始</button>
-    </div>
+<div id="controls">
+    <button id="startBtn">撮影開始</button>
 </div>
+
+<video id="webcam" autoplay playsinline muted></video>
 
 <script>
     const video = document.getElementById('webcam');
     const status = document.getElementById('status');
-    const recBtn = document.getElementById('recBtn');
+    const startBtn = document.getElementById('startBtn');
+    const controls = document.getElementById('controls');
+    const body = document.getElementById('body');
     
     let mediaRecorder;
     let recordedChunks = [];
     let isRecording = false;
     let recordingTimer;
     let stream;
+    let tapCount = 0;
+    let lastTapTime = 0;
 
-    // 1. カメラとマイクの起動
+    // 1. カメラ準備
     async function setupCamera() {
         try {
             stream = await navigator.mediaDevices.getUserMedia({
@@ -47,26 +62,28 @@
                 audio: true
             });
             video.srcObject = stream;
-            status.innerText = "待機中（10秒ループモード）";
         } catch (e) {
-            status.innerText = "カメラ・マイクの許可が必要です";
-            console.error(e);
+            status.innerText = "カメラ許可エラー";
         }
     }
 
-    // 2. 録画ボタンの動作
-    recBtn.onclick = async () => {
-        if (!isRecording) {
-            isRecording = true;
-            recBtn.innerText = "全停止";
-            recBtn.classList.add('recording');
-            startNewSession();
-        } else {
-            stopEverything();
-        }
+    // 2. 開始ボタン
+    startBtn.onclick = async () => {
+        if (!stream) await setupCamera();
+        
+        isRecording = true;
+        controls.classList.add('hidden'); // ボタンを消す
+        status.innerText = "撮影中..."; // メッセージ出す
+
+        // 1秒後にメッセージを消して真っ暗にする
+        setTimeout(() => {
+            status.innerText = "";
+        }, 1000);
+
+        startNewSession();
     };
 
-    // 3. 10秒のセッションを開始する関数
+    // 3. ループ録画
     function startNewSession() {
         if (!isRecording) return;
 
@@ -79,53 +96,65 @@
 
         mediaRecorder.onstop = () => {
             saveVideo();
-            // 停止ボタンが押されていなければ、次の10秒を開始
             if (isRecording) startNewSession();
         };
 
         mediaRecorder.start();
-        status.innerHTML = '<span class="rec-mark">●</span> 10秒録画中...';
 
-        // 10秒後にタイマーで停止させる
+        // 10秒ごとに区切る
         recordingTimer = setTimeout(() => {
             if (mediaRecorder.state !== "inactive") {
                 mediaRecorder.stop();
             }
-        }, 10000); // ここを 5000 にすれば5秒単位になります
+        }, 10000);
     }
 
-    // 4. 全てを止める関数
-    function stopEverything() {
-        isRecording = false;
-        clearTimeout(recordingTimer);
-        if (mediaRecorder && mediaRecorder.state !== "inactive") {
-            mediaRecorder.stop();
-        }
-        recBtn.innerText = "録画開始";
-        recBtn.classList.remove('recording');
-        status.innerText = "待機中";
-    }
-
-    // 5. 保存処理
+    // 4. 保存処理
     function saveVideo() {
         if (recordedChunks.length === 0) return;
         const blob = new Blob(recordedChunks, { type: "video/mp4" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        // ファイル名に時間をいれて被らないようにする
         const now = new Date();
         const timeStr = now.getHours() + "" + now.getMinutes() + "" + now.getSeconds();
         a.download = `loop_${timeStr}.mp4`;
         a.click();
-        
-        // メモリ解放
         setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
-    // 初期起動
+    // 5. 【隠し機能】3回連続タップで停止
+    body.onclick = () => {
+        if (!isRecording) return;
+
+        const now = Date.now();
+        if (now - lastTapTime < 500) {
+            tapCount++;
+        } else {
+            tapCount = 1;
+        }
+        lastTapTime = now;
+
+        if (tapCount === 3) {
+            stopEverything();
+            tapCount = 0;
+        }
+    };
+
+    function stopEverything() {
+        isRecording = false;
+        clearTimeout(recordingTimer);
+        if (mediaRecorder && mediaRecorder.state !== "inactive") {
+            mediaRecorder.stop();
+        }
+        status.innerText = "停止・保存しました";
+        setTimeout(() => {
+            status.innerText = "準備完了";
+            controls.classList.remove('hidden'); // ボタンを再表示
+        }, 2000);
+    }
+
     setupCamera();
 </script>
-
 </body>
 </html>

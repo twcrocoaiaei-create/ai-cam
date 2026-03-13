@@ -2,52 +2,55 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Ultimate Stealth Cam</title>
     <style>
         /* 画面全体を真っ黒に固定 */
-        body { 
-            margin: 0; 
-            background: #000; 
-            color: white; 
-            font-family: sans-serif; 
-            overflow: hidden; 
+        body {
+            margin: 0;
+            background: #000;
+            color: white;
+            font-family: sans-serif;
+            overflow: hidden;
             touch-action: none; /* ズームやスクロールを無効化 */
-        }
-        
-        /* 映像は見せない */
-        video { display: none; }
-        
-        /* 開始ボタンの配置 */
-        #controls { 
-            position: absolute; 
-            top: 50%; 
-            left: 50%; 
-            transform: translate(-50%, -50%); 
-            z-index: 100; 
+            -webkit-user-select: none;
+            user-select: none;
         }
 
-        button { 
-            width: 220px; 
-            padding: 25px; 
-            border: none; 
-            border-radius: 60px; 
-            font-size: 20px; 
-            font-weight: bold; 
-            background: #ff3b30; 
+        /* 映像は見せない */
+        video { display: none; }
+
+        /* 開始ボタンの配置 */
+        #controls {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 100;
+        }
+
+        button {
+            width: 220px;
+            padding: 25px;
+            border: none;
+            border-radius: 60px;
+            font-size: 20px;
+            font-weight: bold;
+            background: #ff3b30;
             color: white;
             box-shadow: 0 4px 15px rgba(255,0,0,0.3);
         }
 
         /* 状態表示 */
-        #status { 
-            position: absolute; 
-            top: 50%; 
-            left: 50%; 
+        #status {
+            position: absolute;
+            top: 50%;
+            left: 50%;
             transform: translate(-50%, -50%);
-            font-size: 24px; 
-            text-align: center; 
-            pointer-events: none; 
+            font-size: 24px;
+            text-align: center;
+            pointer-events: none;
             z-index: 200;
         }
 
@@ -66,133 +69,164 @@
 
 <script>
     const video = document.getElementById('webcam');
-    const status = document.getElementById('status');
+    const statusEl = document.getElementById('status');
     const startBtn = document.getElementById('startBtn');
     const controls = document.getElementById('controls');
     const body = document.getElementById('body');
-    
+
     let mediaRecorder;
     let recordedChunks = [];
     let isRecording = false;
-    let recordingTimer;
     let stream;
     let pressTimer;
 
-    // 1. カメラとマイクの初期化
+    // -------- 1) カメラとマイクの初期化 --------
     async function setupCamera() {
         try {
             stream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: "environment" }, // 外カメラ使用
+                video: { facingMode: "environment" }, // 外カメラ使用（デバイスによっては無視されることあり）
                 audio: true
             });
             video.srcObject = stream;
         } catch (e) {
-            status.innerText = "エラー: カメラを許可してください";
+            statusEl.innerText = "エラー: カメラ・マイクの許可が必要です";
             console.error(e);
+            throw e;
         }
     }
 
-    // 2. 撮影開始処理
+    // -------- 2) 撮影開始（以後はメモリ上でずっと録画）--------
     startBtn.onclick = async () => {
-        if (!stream) await setupCamera();
-        
-        isRecording = true;
-        controls.classList.add('hidden'); // ボタンを消す
-        status.innerText = "撮影中..."; // メッセージ表示
+        try {
+            if (!stream) await setupCamera();
 
-        // 1秒後に完全に真っ暗にする
-        setTimeout(() => {
-            if(isRecording) status.innerText = "";
-        }, 1000);
+            recordedChunks = [];
+            isRecording = true;
+            controls.classList.add('hidden');
+            statusEl.innerText = "撮影中...";
 
-        startNewSession();
+            // 1秒後に完全に真っ暗に（状態表示を消去）
+            setTimeout(() => {
+                if (isRecording) statusEl.innerText = "";
+            }, 1000);
+
+            // iOS Safariなども考慮し、mimeTypeは明示しない（ブラウザに任せる）
+            // ※MediaRecorderはブラウザ・OSによって利用可能コーデックが異なります
+            mediaRecorder = new MediaRecorder(stream);
+
+            // データ受領（stop時だけ発火する環境もある）
+            mediaRecorder.ondataavailable = (e) => {
+                if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+            };
+
+            // 停止後に1ファイルとして保存
+            mediaRecorder.onstop = () => {
+                saveSingleVideo();
+            };
+
+            // 区切らない：ずっと録画
+            mediaRecorder.start(); // timesliceは指定しない
+        } catch (err) {
+            // 失敗時は開始UIを戻す
+            isRecording = false;
+            controls.classList.remove('hidden');
+        }
     };
 
-    // 3. 10秒ごとのループ録画セッション
-    function startNewSession() {
+    // -------- 3) 長押し10秒で停止・保存 --------
+    // ご要望に合わせて20秒 -> 10秒に変更
+    const LONG_PRESS_MS = 10000;
+
+    body.onpointerdown = () => {
         if (!isRecording) return;
-
-        recordedChunks = [];
-        // iPhone対応のためmimeTypeは指定せずブラウザに任せる
-        mediaRecorder = new MediaRecorder(stream);
-        
-        mediaRecorder.ondataavailable = (e) => {
-            if (e.data.size > 0) recordedChunks.push(e.data);
-        };
-
-        mediaRecorder.onstop = () => {
-            saveVideo();
-            // 停止指示が出ていなければ次の10秒を開始
-            if (isRecording) startNewSession();
-        };
-
-        mediaRecorder.start();
-
-        // 10秒（10000ms）で一度区切る
-        recordingTimer = setTimeout(() => {
-            if (mediaRecorder.state !== "inactive") {
-                mediaRecorder.stop();
-            }
-        }, 10000);
-    }
-
-    // 4. 自動保存処理
-    function saveVideo() {
-        if (recordedChunks.length === 0) return;
-        
-        const blob = new Blob(recordedChunks, { type: "video/mp4" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        
-        // ファイル名に現在の時間を付与して重複回避
-        const now = new Date();
-        const timeStr = now.getHours() + "h" + now.getMinutes() + "m" + now.getSeconds() + "s";
-        
-        a.href = url;
-        a.download = `rec_${timeStr}.mp4`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        
-        // メモリ解放
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }
-
-    // 5. 【鉄壁ガード】20秒間の長押しで停止
-    body.onpointerdown = (e) => {
-        if (!isRecording) return;
-        
-        // 20秒（20000ms）のカウントダウン開始
+        // 停止までのカウントダウン
         pressTimer = setTimeout(() => {
-            stopEverything();
-        }, 20000);
+            stopEverything(); // 停止してダウンロード
+        }, LONG_PRESS_MS);
     };
 
-    // 指を離したり、画面外にスライドしたらリセット
+    // 指を離した/キャンセル/画面外スライドなら中断
     body.onpointerup = body.onpointerleave = body.onpointercancel = () => {
         clearTimeout(pressTimer);
     };
 
-    // 6. 全停止処理
+    // -------- 4) 停止処理 --------
     function stopEverything() {
+        if (!isRecording) return;
         isRecording = false;
-        clearTimeout(recordingTimer);
-        
-        if (mediaRecorder && mediaRecorder.state !== "inactive") {
-            mediaRecorder.stop();
+
+        try {
+            if (mediaRecorder && mediaRecorder.state !== "inactive") {
+                mediaRecorder.stop(); // onstopで保存呼び出し
+            } else {
+                // 非常時：すでにinactiveなら明示的に保存試行
+                saveSingleVideo();
+            }
+        } catch (e) {
+            console.error(e);
+            // 最低限UIは戻す
+            statusEl.innerText = "停止処理でエラーが発生しました";
+            setTimeout(() => {
+                statusEl.innerText = "システム準備完了";
+                controls.classList.remove('hidden');
+            }, 2000);
+            return;
         }
-        
-        status.innerText = "停止・保存完了";
-        
-        // 2秒後に最初の画面に戻す
-        setTimeout(() => {
-            status.innerText = "システム準備完了";
-            controls.classList.remove('hidden');
-        }, 2000);
+
+        // 表示を一時的に戻す（保存完了はsaveSingleVideo側で表示）
+        statusEl.innerText = "停止中...";
     }
 
-    // ページ読み込み時にカメラを準備
-    setupCamera();
+    // -------- 5) 1ファイルとして保存 --------
+    function saveSingleVideo() {
+        try {
+            if (!recordedChunks || recordedChunks.length === 0) {
+                statusEl.innerText = "データなし（録画が短すぎる可能性）";
+            } else {
+                // ブラウザが選んだmimeTypeを優先（MediaRecorder.mimeTypeは一部環境で空）
+                // ダウンロード拡張子はmp4優先、難しい場合はwebmにフォールバック
+                // 実際の中身と拡張子が一致しないと再生できない場合がある点に留意
+                const mimeType = mediaRecorder && mediaRecorder.mimeType ? mediaRecorder.mimeType : '';
+                const isMp4 = mimeType.includes('mp4') || mimeType.includes('mp4;') || mimeType.includes('mpeg');
+                const extension = isMp4 ? 'mp4' : 'webm';
+
+                const blob = new Blob(recordedChunks, { type: mimeType || `video/${extension}` });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+
+                const now = new Date();
+                const timeStr =
+                    now.getHours().toString().padStart(2, '0') + "h" +
+                    now.getMinutes().toString().padStart(2, '0') + "m" +
+                    now.getSeconds().toString().padStart(2, '0') + "s";
+
+                a.href = url;
+                a.download = `rec_${timeStr}.${extension}`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+                statusEl.innerText = "停止・保存完了";
+            }
+        } catch (e) {
+            console.error(e);
+            statusEl.innerText = "保存中にエラーが発生しました";
+        } finally {
+            // UIを初期状態に戻す
+            setTimeout(() => {
+                statusEl.innerText = "システム準備完了";
+                controls.classList.remove('hidden');
+            }, 1500);
+        }
+    }
+
+    // -------- 6) 初期準備（許可は開始ボタンクリックで）--------
+    // 一部ブラウザはユーザー操作なしのgetUserMediaを拒否するため、
+    // ページロード時には呼ばず、開始ボタンクリックでセットアップします。
+    // もし先行準備したい場合は以下のコメントアウトを外してください。
+    // setupCamera();
 </script>
 
 </body>
